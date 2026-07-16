@@ -1,5 +1,7 @@
 -- PhoneDrop Dock droplet
 -- Thin shim: receives dropped files and delegates all logic to phonedrop.sh.
+-- Multi-target routing prefers per-phone folders (~/PhoneDrop/<name>/) via launchd;
+-- this droplet still pushes to the default/legacy Android target (or sole target).
 -- Compiled via: osacompile -o ~/Applications/PhoneDrop.app phonedrop-droplet.applescript
 
 on open theFiles
@@ -15,6 +17,7 @@ on open theFiles
     -- Path to the installed logic script (stable; does not depend on source location)
     set logicScript to (POSIX path of (path to library folder from user domain)) & "Application Support/PhoneDrop/phonedrop.sh"
 
+    -- Optional: set PHONEDROP_TARGET in the environment before launch to pin a named phone.
     -- Invoke push verb with all quoted paths
     try
         do shell script "exec " & quoted form of logicScript & " push" & quotedPaths
@@ -24,5 +27,5 @@ on open theFiles
 end open
 
 on run
-    display dialog "PhoneDrop is a Dock droplet. Drag photos onto its icon to send them to your phone." buttons {"OK"} default button "OK"
+    display dialog "PhoneDrop is a Dock droplet. Drag photos onto its icon to send them to your default phone target. Prefer per-phone folders under ~/PhoneDrop/ for multi-target routing." buttons {"OK"} default button "OK"
 end run

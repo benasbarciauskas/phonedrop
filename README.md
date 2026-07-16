@@ -2,92 +2,171 @@
 
 # PhoneDrop
 
-Drag photos to your Dock and send metadata-free copies to an Android phone.
+Drag photos into a per-phone drop folder (or onto a Dock droplet) and send them to Android or iOS — optionally metadata-free.
 
 ![macOS](https://img.shields.io/badge/macOS-13%2B-black)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 </div>
 
-PhoneDrop is a small macOS Dock droplet. Drop photos onto it and PhoneDrop copies them to a temporary directory, removes EXIF and GPS metadata, then pushes them into the phone gallery with `adb`. It prefers wireless ADB over Tailscale and falls back to a connected USB device.
+PhoneDrop is a multi-target macOS drop system. Each phone gets its own watched folder under `~/PhoneDrop/<name>/`. Drop a photo into that folder and PhoneDrop auto-sends it to the right device, then archives (or deletes) the source. Android targets use wireless `adb` over Tailscale; iOS targets use AirDrop via AppKit `NSSharingService`. Metadata stripping is per-target and always runs on a **copy** — originals in the drop folder are never edited in place.
 
 ## Requirements
 
 - macOS
 - [Homebrew](https://brew.sh/)
-- An Android phone with [Tailscale](https://tailscale.com/download/android) and Wireless debugging
+- **Android phones:** [Tailscale](https://tailscale.com/download/android) + Wireless debugging + `adb`
+- **iOS phones:** same Apple Account (auto-accept) or AirDrop set to Contacts/Everyone; iPhone awake/unlocked nearby
+- Optional: [ExifTool](https://exiftool.org/) (required only when a target has `strip_metadata=true`)
 
-Install the command-line dependencies:
+Install CLI dependencies:
 
 ```bash
 brew install android-platform-tools exiftool
-brew install --cask tailscale
+brew install --cask tailscale   # Android path only
 ```
 
 ## Install
-
-Clone the repository, then run:
 
 ```bash
 scripts/phonedrop.sh install
 ```
 
-The installer creates `~/Applications/PhoneDrop.app`, stores its runtime script in `~/Library/Application Support/PhoneDrop`, writes configuration to `~/.config/phonedrop/config`, and enables an auto-arm LaunchAgent. Edit `PHONE_HOST` in the config if the installer could not detect it, then drag `PhoneDrop.app` to the Dock.
+The installer:
 
-## One-time phone setup
-
-1. Install Tailscale on the Mac and phone, sign in to the same tailnet, and enable always-on VPN for Tailscale on Android.
-2. On Android, enable Developer options, then enable **Wireless debugging**.
-3. In Wireless debugging, choose **Pair device with pairing code**. On the Mac, run the command shown by the phone:
-
-   ```bash
-   adb pair PHONE_IP:PAIRING_PORT
-   ```
-
-4. Connect once using the Wireless debugging address shown on the phone, then switch ADB to PhoneDrop's stable port:
-
-   ```bash
-   adb connect PHONE_IP:DEBUG_PORT
-   adb tcpip 5555
-   ```
-
-5. Put the phone's Tailscale MagicDNS name in `~/.config/phonedrop/config` as `PHONE_HOST` and run:
-
-   ```bash
-   scripts/phonedrop.sh connect
-   ```
-
-Wireless ADB may reset after the phone reboots. Plug in one phone over USB and run `scripts/phonedrop.sh rearm`; the installed auto-arm agent will also re-enable wireless ADB when it sees that USB connection.
-
-## Usage
-
-Drag one or more photos onto the PhoneDrop icon in the Dock. Successful transfers appear in `DCIM/PhoneDrop` and are indexed by the Android gallery.
-
-The script can also be used directly:
+1. Writes global config to `~/.config/phonedrop/config` (legacy single-host fields + tool paths)
+2. Uses / migrates `~/.config/phonedrop/targets.conf` for named phones
+3. Creates per-target drop folders (`~/PhoneDrop/<name>/` + `sent/`)
+4. Installs a launchd **WatchPaths** agent per target (`com.phonedrop.watch.<name>`)
+5. Installs the wireless adb auto-arm agent (Android)
+6. Copies the logic script + AirDrop helper into `~/Library/Application Support/PhoneDrop`
+7. Compiles the optional Dock droplet to `~/Applications/PhoneDrop.app`
 
 ```bash
-scripts/phonedrop.sh status
-scripts/phonedrop.sh connect
-scripts/phonedrop.sh rearm
-scripts/phonedrop.sh check
-scripts/phonedrop.sh push "path/to/photo.jpg" "path with spaces/another photo.heic"
+scripts/phonedrop.sh uninstall   # removes launchd agents; keeps config + folders
 ```
 
-- `status` shows configuration, dependency, auto-arm, and ADB state.
-- `connect` connects to the configured phone over Tailscale.
-- `rearm` uses one USB-connected phone to restore wireless ADB on port 5555.
-- `check` runs local configuration and EXIF-strip checks; a phone is optional.
-- `push` strips supported image files and transfers them. A reachable USB device is used if the configured wireless target is unavailable.
+## Multi-target model
 
-## Metadata removal
+### Config
 
-PhoneDrop never edits the original. For each dropped image it creates a temporary copy, runs:
+Phones live in `~/.config/phonedrop/targets.conf` (and optional `targets.d/*.conf`):
+
+```ini
+[pixel]
+platform=android
+phone_host=android-phone
+adb_port=5555
+dest=/sdcard/DCIM/PhoneDrop/
+strip_metadata=true
+drop_folder=~/PhoneDrop/pixel
+on_send=archive
+
+[iphone]
+platform=ios
+airdrop_recipient=Benas’s iPhone
+strip_metadata=true
+drop_folder=~/PhoneDrop/iphone
+on_send=archive
+```
+
+| Field | Meaning |
+|---|---|
+| `platform` | `android` or `ios` |
+| `phone_host` / `adb_port` / `dest` / `serial` | Android adb transport |
+| `airdrop_recipient` | iOS AirDrop device/contact name |
+| `strip_metadata` | `true` (default) or `false` |
+| `drop_folder` | Watched inbox for this phone |
+| `on_send` | `archive` → `drop_folder/sent/` (default) or `delete` |
+
+**Backward compatible:** a lone `PHONE_HOST` in `~/.config/phonedrop/config` is still treated as a single Android target (`default`). `install` can migrate it into `targets.conf`.
+
+### Manage phones
+
+```bash
+scripts/phonedrop.sh add-phone --name pixel --platform android --host android-phone
+scripts/phonedrop.sh add-phone --name iphone --platform ios --recipient "Benas’s iPhone"
+scripts/phonedrop.sh add-phone --name raw --platform android --host phone --no-strip
+scripts/phonedrop.sh remove-phone pixel
+scripts/phonedrop.sh list
+scripts/phonedrop.sh config            # global + all targets
+scripts/phonedrop.sh config iphone     # one target
+```
+
+`add-phone` / `remove-phone` refresh that target’s WatchPaths launchd agent when PhoneDrop is installed.
+
+### Per-phone drop folders (primary UX)
+
+```
+~/PhoneDrop/pixel/     → auto-sends to Android target "pixel"
+~/PhoneDrop/iphone/    → auto-sends to iOS target "iphone" via AirDrop
+```
+
+Drop a photo in; launchd fires `phonedrop.sh watch <name>`; the file is sent and then moved to `sent/` (or deleted). Different folders → different phones.
+
+### CLI + Dock droplet
+
+```bash
+scripts/phonedrop.sh push --target pixel "path/to/photo.jpg"
+scripts/phonedrop.sh push --target iphone "My Photos/vacation.heic"
+scripts/phonedrop.sh push "photo.jpg"   # single target or legacy PHONE_HOST
+```
+
+The Dock droplet (`PhoneDrop.app`) still works for the default/legacy Android path: drag photos onto the icon.
+
+## Android path (adb)
+
+Same as before: strip (if enabled) on a temp copy, `adb push` into `DEST`, media-scan broadcast. Prefers `phone_host:adb_port` over Tailscale; falls back to a single USB device.
+
+One-time phone setup:
+
+1. Tailscale on Mac + phone, same tailnet, always-on VPN on Android.
+2. Developer options → **Wireless debugging** → pair with code (`adb pair …`).
+3. `adb connect PHONE_IP:DEBUG_PORT` then `adb tcpip 5555`.
+4. Put the MagicDNS name in the target’s `phone_host` (or legacy `PHONE_HOST`).
+5. `scripts/phonedrop.sh connect` / `rearm` after reboots. Auto-arm helps when USB is plugged in.
+
+## iOS path (AirDrop)
+
+For `platform=ios`, PhoneDrop:
+
+1. Copies each file to a private temp dir
+2. Optionally strips metadata on that copy (`strip_metadata=true`)
+3. Hands the copy to **`NSSharingService(named: .sendViaAirDrop)`** via `scripts/phonedrop-airdrop.swift`
+4. If `airdrop_recipient` is set, best-effort System Events scripting clicks that peer in the AirDrop browser (Accessibility permission may be required)
+
+**Same-Apple-Account devices auto-accept** on the iPhone (Apple’s documented exception). Cross-account transfers need an Accept tap (and may show an AirDrop code).
+
+Practical requirements:
+
+- iPhone nearby, awake/unlocked (or recently unlocked)
+- Wi-Fi + Bluetooth on
+- AirDrop: same Apple Account, or Contacts Only / Everyone
+- First run may prompt for Automation/Accessibility if recipient auto-click is used
+
+There is no documented public API to silently pick an AirDrop recipient; the spike recommendation is public AppKit AirDrop with same-account auto-accept. See [docs/ios-transfer-spike.md](docs/ios-transfer-spike.md).
+
+## Toggleable metadata strip
+
+Per target, `strip_metadata=true|false` (default **true**).
+
+When **true**, PhoneDrop copies the source, runs:
 
 ```bash
 exiftool -overwrite_original -all= COPY
 ```
 
-and pushes only that copy. `-all=` removes EXIF, GPS, and other writable metadata. Temporary files are deleted when the command exits. Non-image files can be pushed from the CLI but are not passed through ExifTool.
+and sends only the copy. When **false**, the untouched copy is sent as-is. The file in the drop folder (or CLI path) is **never** modified in place; after a successful folder send it is archived or deleted according to `on_send`.
+
+## Other commands
+
+```bash
+scripts/phonedrop.sh status
+scripts/phonedrop.sh connect [name]
+scripts/phonedrop.sh rearm [name]
+scripts/phonedrop.sh check
+scripts/phonedrop.sh watch [name]    # used by launchd; safe to run by hand
+```
 
 ## Tests
 
@@ -95,11 +174,7 @@ and pushes only that copy. `-all=` removes EXIF, GPS, and other writable metadat
 bash tests/phonedrop_test.sh
 ```
 
-No phone is needed. The suite uses ADB stubs and checks configuration parsing, paths containing spaces, safe filenames, transport selection, wireless re-arming, and EXIF/GPS removal. Install ExifTool to run the real metadata assertions.
-
-## iOS
-
-iOS transfer is not implemented. See [the iOS transfer research spike](docs/ios-transfer-spike.md) for evaluated routes and a proposed next experiment.
+No phone required. Stubs cover adb + AirDrop. Assertions include multi-target `targets.conf` parsing, per-target strip on/off, arg/path quoting with spaces, folder→target routing, and EXIF/GPS strip behaviour.
 
 ## License
 

@@ -624,6 +624,283 @@ assert_not_contains "autoarm multiple USB does not run tcpip" "tcpip" "${ADB_LOG
 
 rm -rf "${STUB_DIR}" "${STUB_CFG_DIR}"
 
+# ===========================================================================
+# Multi-target expansion tests (phone-free; send mocked)
+# ===========================================================================
+
+echo ""
+echo "=== Test 6: multi-target targets.conf parsing ==="
+
+MT_DIR=$(mktemp -d)
+MT_TARGETS="${MT_DIR}/targets.conf"
+MT_TARGETS_D="${MT_DIR}/targets.d"
+mkdir -p "${MT_TARGETS_D}" "${MT_DIR}/drops/pixel" "${MT_DIR}/drops/iphone" "${MT_DIR}/drops/work phone"
+
+cat > "${MT_TARGETS}" << 'EOF'
+# multi-target fixture
+[pixel]
+platform=android
+phone_host=pixel-tailscale
+adb_port=5555
+dest=/sdcard/DCIM/PhoneDrop/
+strip_metadata=true
+drop_folder=~/PhoneDrop/pixel
+on_send=archive
+
+[iphone]
+platform=ios
+airdrop_recipient=Benas iPhone
+strip_metadata=false
+drop_folder=~/PhoneDrop/iphone
+on_send=delete
+EOF
+
+# second file in targets.d with a space-containing path in drop_folder
+cat > "${MT_TARGETS_D}/work.conf" << EOF
+[work-phone]
+platform=android
+phone_host=work-android
+adb_port=5555
+strip_metadata=true
+drop_folder=${MT_DIR}/drops/work phone
+on_send=archive
+EOF
+
+LIST_OUT=$(
+  PHONEDROP_CONFIG_DIR="${MT_DIR}" \
+  PHONEDROP_CONFIG_FILE="${MT_DIR}/config" \
+  PHONEDROP_TARGETS_FILE="${MT_TARGETS}" \
+  PHONEDROP_TARGETS_D="${MT_TARGETS_D}" \
+  HOME="${MT_DIR}/home" \
+  bash "${PHONEDROP}" list 2>&1
+)
+
+assert_contains "list shows pixel" "pixel" "${LIST_OUT}"
+assert_contains "list shows iphone" "iphone" "${LIST_OUT}"
+assert_contains "list shows work-phone from targets.d" "work-phone" "${LIST_OUT}"
+assert_contains "list shows android platform for pixel" "android" "${LIST_OUT}"
+assert_contains "list shows ios platform for iphone" "ios" "${LIST_OUT}"
+assert_contains "list shows strip true for pixel" "true" "${LIST_OUT}"
+assert_contains "list shows strip false for iphone" "false" "${LIST_OUT}"
+assert_contains "list shows AirDrop transport" "AirDrop:Benas iPhone" "${LIST_OUT}"
+assert_contains "list shows adb transport" "adb:pixel-tailscale:5555" "${LIST_OUT}"
+
+CFG_OUT=$(
+  PHONEDROP_CONFIG_DIR="${MT_DIR}" \
+  PHONEDROP_CONFIG_FILE="${MT_DIR}/config" \
+  PHONEDROP_TARGETS_FILE="${MT_TARGETS}" \
+  PHONEDROP_TARGETS_D="${MT_TARGETS_D}" \
+  HOME="${MT_DIR}/home" \
+  bash "${PHONEDROP}" config iphone 2>&1
+)
+assert_contains "config iphone shows strip_metadata=false" "strip_metadata=false" "${CFG_OUT}"
+assert_contains "config iphone shows airdrop recipient" "airdrop_recipient=Benas iPhone" "${CFG_OUT}"
+assert_contains "config iphone shows platform=ios" "platform=ios" "${CFG_OUT}"
+
+# add-phone non-interactive
+ADD_OUT=$(
+  PHONEDROP_CONFIG_DIR="${MT_DIR}" \
+  PHONEDROP_CONFIG_FILE="${MT_DIR}/config" \
+  PHONEDROP_TARGETS_FILE="${MT_TARGETS}" \
+  PHONEDROP_TARGETS_D="${MT_TARGETS_D}" \
+  HOME="${MT_DIR}/home" \
+  bash "${PHONEDROP}" add-phone --name tablet --platform android --host tab-host --no-strip --folder "${MT_DIR}/drops/tablet" --yes 2>&1
+)
+assert_contains "add-phone reports saved" "target 'tablet' saved" "${ADD_OUT}"
+assert_file_exists "add-phone created targets.conf entry" "${MT_TARGETS}"
+ADD_LIST=$(
+  PHONEDROP_CONFIG_DIR="${MT_DIR}" \
+  PHONEDROP_CONFIG_FILE="${MT_DIR}/config" \
+  PHONEDROP_TARGETS_FILE="${MT_TARGETS}" \
+  PHONEDROP_TARGETS_D="${MT_TARGETS_D}" \
+  HOME="${MT_DIR}/home" \
+  bash "${PHONEDROP}" list 2>&1
+)
+assert_contains "list includes newly added tablet" "tablet" "${ADD_LIST}"
+
+rm -rf "${MT_DIR}"
+
+# --- Test 7: per-target strip flag + folder routing (mocked send) ---
+echo ""
+echo "=== Test 7: strip flag + folder routing (mocked send) ==="
+
+STUB7=$(mktemp -d)
+ADB_LOG7="${STUB7}/adb.log"
+EXIF_LOG7="${STUB7}/exiftool.log"
+AIRDROP_LOG7="${STUB7}/airdrop.log"
+
+cat > "${STUB7}/adb" << STUBEOF
+#!/usr/bin/env bash
+echo "\$@" >> "${ADB_LOG7}"
+if [[ "\${1:-}" == "connect" ]]; then echo "connected to \${2}"; exit 0; fi
+if [[ "\${1:-}" == "devices" ]]; then
+  echo "List of devices attached"
+  printf "%b" "pixel-tailscale:5555\tdevice\\n"
+  exit 0
+fi
+if [[ "\${1:-}" == "-s" && "\${3:-}" == "get-state" ]]; then echo "device"; exit 0; fi
+if [[ "\${1:-}" == "-s" && "\${3:-}" == "push" ]]; then exit 0; fi
+if [[ "\${1:-}" == "-s" && "\${3:-}" == "shell" ]]; then exit 0; fi
+exit 0
+STUBEOF
+chmod +x "${STUB7}/adb"
+
+if [[ -x "${EXIFTOOL_BIN}" ]]; then
+  cat > "${STUB7}/exiftool" << STUBEOF
+#!/usr/bin/env bash
+echo "\$@" >> "${EXIF_LOG7}"
+exec "${EXIFTOOL_BIN}" "\$@"
+STUBEOF
+else
+  cat > "${STUB7}/exiftool" << STUBEOF
+#!/usr/bin/env bash
+echo "\$@" >> "${EXIF_LOG7}"
+exit 0
+STUBEOF
+fi
+chmod +x "${STUB7}/exiftool"
+
+cat > "${STUB7}/airdrop" << STUBEOF
+#!/usr/bin/env bash
+echo "\$@" >> "${AIRDROP_LOG7}"
+exit 0
+STUBEOF
+chmod +x "${STUB7}/airdrop"
+
+CFG7="${STUB7}/cfg"
+mkdir -p "${CFG7}" "${STUB7}/drop-pixel" "${STUB7}/drop-iphone" "${STUB7}/My Photos"
+cat > "${CFG7}/config" << CFGEOF
+PHONE_HOST="legacy-unused"
+ADB_PORT="5555"
+DEST="/sdcard/DCIM/PhoneDrop/"
+ADB_BIN="${STUB7}/adb"
+EXIFTOOL_BIN="${STUB7}/exiftool"
+TAILSCALE_BIN="/usr/bin/true"
+CFGEOF
+
+cat > "${CFG7}/targets.conf" << EOF
+[pixel]
+platform=android
+phone_host=pixel-tailscale
+adb_port=5555
+dest=/sdcard/DCIM/PhoneDrop/
+strip_metadata=true
+drop_folder=${STUB7}/drop-pixel
+on_send=archive
+
+[iphone]
+platform=ios
+airdrop_recipient=Test iPhone
+strip_metadata=false
+drop_folder=${STUB7}/drop-iphone
+on_send=archive
+EOF
+
+# Create a JPEG with GPS when possible
+PHOTO7="${STUB7}/My Photos/vacation photo.jpg"
+if [[ -x "${EXIFTOOL_BIN}" ]] && command -v sips >/dev/null 2>&1; then
+  TMP_PNG7="${STUB7}/pixel.png"
+  python3 - "${TMP_PNG7}" << 'PYEOF'
+import sys, struct, zlib
+def write_png(path):
+    raw = b'\x00\x00'
+    compressed = zlib.compress(raw)
+    def chunk(tag, data):
+        c = struct.pack('>I', len(data)) + tag + data
+        crc = zlib.crc32(c[4:]) & 0xffffffff
+        return c + struct.pack('>I', crc)
+    sig = b'\x89PNG\r\n\x1a\n'
+    ihdr = chunk(b'IHDR', struct.pack('>IIBBBBB', 1, 1, 8, 0, 0, 0, 0))
+    idat = chunk(b'IDAT', compressed)
+    iend = chunk(b'IEND', b'')
+    open(path, 'wb').write(sig + ihdr + idat + iend)
+write_png(sys.argv[1])
+PYEOF
+  sips -s format jpeg "${TMP_PNG7}" --out "${PHOTO7}" >/dev/null 2>&1
+  "${EXIFTOOL_BIN}" -overwrite_original -GPSLatitude=51.5 -GPSLongitude=-0.1 -GPSLatitudeRef=N -GPSLongitudeRef=W "${PHOTO7}" >/dev/null 2>&1
+else
+  printf '\xFF\xD8\xFF\xE0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xFF\xD9' > "${PHOTO7}"
+fi
+ORIG_MD5_7=$(md5 -q "${PHOTO7}" 2>/dev/null || md5sum "${PHOTO7}" | awk '{print $1}')
+
+# 7a: push --target pixel (strip ON)
+> "${ADB_LOG7}"
+> "${EXIF_LOG7}"
+PHONEDROP_CONFIG_DIR="${CFG7}" \
+PHONEDROP_CONFIG_FILE="${CFG7}/config" \
+PHONEDROP_TARGETS_FILE="${CFG7}/targets.conf" \
+PHONEDROP_TARGETS_D="${CFG7}/targets.d" \
+  bash "${PHONEDROP}" push --target pixel "${PHOTO7}" 2>&1 | grep -v "^$" || true
+
+AFTER_MD5_7=$(md5 -q "${PHOTO7}" 2>/dev/null || md5sum "${PHOTO7}" | awk '{print $1}')
+assert_eq "strip-on push does not mutate source" "${ORIG_MD5_7}" "${AFTER_MD5_7}"
+ADB7=$(cat "${ADB_LOG7}" 2>/dev/null || true)
+assert_contains "strip-on routes to pixel host" "-s pixel-tailscale:5555 push" "${ADB7}"
+assert_contains "strip-on push sanitises spaced filename" "vacation_photo.jpg" "${ADB7}"
+EXIF7=$(cat "${EXIF_LOG7}" 2>/dev/null || true)
+assert_contains "strip-on invokes exiftool -all=" "-all=" "${EXIF7}"
+
+# 7b: push --target iphone (strip OFF) → AirDrop mock
+> "${AIRDROP_LOG7}"
+> "${EXIF_LOG7}"
+PHONEDROP_CONFIG_DIR="${CFG7}" \
+PHONEDROP_CONFIG_FILE="${CFG7}/config" \
+PHONEDROP_TARGETS_FILE="${CFG7}/targets.conf" \
+PHONEDROP_TARGETS_D="${CFG7}/targets.d" \
+PHONEDROP_AIRDROP_BIN="${STUB7}/airdrop" \
+  bash "${PHONEDROP}" push --target iphone "${PHOTO7}" 2>&1 | grep -v "^$" || true
+
+AFTER_MD5_7b=$(md5 -q "${PHOTO7}" 2>/dev/null || md5sum "${PHOTO7}" | awk '{print $1}')
+assert_eq "strip-off push does not mutate source" "${ORIG_MD5_7}" "${AFTER_MD5_7b}"
+AIR7=$(cat "${AIRDROP_LOG7}" 2>/dev/null || true)
+assert_contains "strip-off AirDrop called with recipient" "--recipient" "${AIR7}"
+assert_contains "strip-off AirDrop recipient name" "Test iPhone" "${AIR7}"
+EXIF7b=$(cat "${EXIF_LOG7}" 2>/dev/null || true)
+assert_not_contains "strip-off does not invoke exiftool -all=" "-all=" "${EXIF7b}"
+
+# 7c: folder routing — drop into pixel folder, run watch
+cp "${PHOTO7}" "${STUB7}/drop-pixel/folder_route.jpg"
+> "${ADB_LOG7}"
+> "${EXIF_LOG7}"
+PHONEDROP_CONFIG_DIR="${CFG7}" \
+PHONEDROP_CONFIG_FILE="${CFG7}/config" \
+PHONEDROP_TARGETS_FILE="${CFG7}/targets.conf" \
+PHONEDROP_TARGETS_D="${CFG7}/targets.d" \
+  bash "${PHONEDROP}" watch pixel 2>&1 | grep -v "^$" || true
+
+ADB7c=$(cat "${ADB_LOG7}" 2>/dev/null || true)
+assert_contains "folder watch routes to pixel adb" "-s pixel-tailscale:5555 push" "${ADB7c}"
+assert_contains "folder watch pushes folder_route file" "folder_route.jpg" "${ADB7c}"
+assert_file_not_exists "folder watch archives source out of drop root" "${STUB7}/drop-pixel/folder_route.jpg"
+assert_file_exists "folder watch archives into sent/" "${STUB7}/drop-pixel/sent/folder_route.jpg"
+
+# 7d: folder routing to ios target
+cp "${PHOTO7}" "${STUB7}/drop-iphone/ios_route.jpg"
+> "${AIRDROP_LOG7}"
+PHONEDROP_CONFIG_DIR="${CFG7}" \
+PHONEDROP_CONFIG_FILE="${CFG7}/config" \
+PHONEDROP_TARGETS_FILE="${CFG7}/targets.conf" \
+PHONEDROP_TARGETS_D="${CFG7}/targets.d" \
+PHONEDROP_AIRDROP_BIN="${STUB7}/airdrop" \
+  bash "${PHONEDROP}" watch iphone 2>&1 | grep -v "^$" || true
+AIR7d=$(cat "${AIRDROP_LOG7}" 2>/dev/null || true)
+assert_contains "ios folder watch invokes AirDrop" "Test iPhone" "${AIR7d}"
+assert_file_exists "ios folder watch archives to sent/" "${STUB7}/drop-iphone/sent/ios_route.jpg"
+
+# 7e: push with spaces in path already covered; multi-target --target with spaces path
+SPACE_PHOTO="${STUB7}/My Photos/another shot.jpg"
+cp "${PHOTO7}" "${SPACE_PHOTO}"
+> "${ADB_LOG7}"
+PHONEDROP_CONFIG_DIR="${CFG7}" \
+PHONEDROP_CONFIG_FILE="${CFG7}/config" \
+PHONEDROP_TARGETS_FILE="${CFG7}/targets.conf" \
+PHONEDROP_TARGETS_D="${CFG7}/targets.d" \
+  bash "${PHONEDROP}" push --target pixel "${SPACE_PHOTO}" 2>&1 | grep -v "^$" || true
+ADB7e=$(cat "${ADB_LOG7}" 2>/dev/null || true)
+assert_contains "multi-target push quotes/spaces path works" "another_shot.jpg" "${ADB7e}"
+
+rm -rf "${STUB7}"
+
 # Summary
 echo ""
 echo "=== Results: ${PASS} passed, ${FAIL} failed ==="

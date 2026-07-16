@@ -106,3 +106,7 @@ Test one JPEG and one HEIC containing known GPS/EXIF tags. For each candidate, v
 - pymobiledevice3: [AFC support and CLI](https://github.com/doronz88/pymobiledevice3)
 - Apple Support: [Set up iCloud Drive](https://support.apple.com/en-euro/118443)
 - Apple Shortcuts User Guide: [personal automation](https://support.apple.com/guide/shortcuts/intro-to-personal-automation-apd690170742/ios) and [`Save to Photo Album`](https://support.apple.com/en-au/guide/shortcuts/apdaf74d75a5/ios)
+
+## Implementation (PhoneDrop multi-target)
+
+AirDrop path is implemented via `scripts/phonedrop-airdrop.swift` (`NSSharingService` `.sendViaAirDrop`). Per-target `strip_metadata` controls whether `exiftool -all=` runs on a **copy** before send; sources are never modified in place.

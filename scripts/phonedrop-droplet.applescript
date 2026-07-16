@@ -12,7 +12,7 @@ on open theFiles
         set quotedPaths to quotedPaths & " '" & escapedPath & "'"
     end repeat
 
-    -- Path to the installed logic script (stable; does not depend on worktree location)
+    -- Path to the installed logic script (stable; does not depend on source location)
     set logicScript to (POSIX path of (path to library folder from user domain)) & "Application Support/PhoneDrop/phonedrop.sh"
 
     -- Invoke push verb with all quoted paths

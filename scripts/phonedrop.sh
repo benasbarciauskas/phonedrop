@@ -225,7 +225,7 @@ cmd_install() {
   if [[ ! -f "${CONFIG_FILE}" ]]; then
     local phone_host=""
     if [[ -t 0 ]]; then
-      read -r -p "Enter phone Tailscale MagicDNS hostname (e.g. motorola): " phone_host
+      read -r -p "Enter phone Tailscale MagicDNS hostname (e.g. android-phone): " phone_host
     fi
     cat > "${CONFIG_FILE}" << EOF
 # PhoneDrop configuration
@@ -463,7 +463,7 @@ cmd_push() {
   done
   rm -rf "${seen_dir}"
   if [[ "${pushed}" -gt 0 ]] && [[ "${failed}" -eq 0 ]]; then
-    notify "PhoneDrop" "Sent ${pushed} photo(s) to Motorola"
+    notify "PhoneDrop" "Sent ${pushed} photo(s) to phone"
   elif [[ "${pushed}" -gt 0 ]]; then
     notify "PhoneDrop" "Sent ${pushed} photo(s); ${failed} failed"
   else

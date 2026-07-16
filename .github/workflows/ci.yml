@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ExifTool
+        run: brew install exiftool
+
+      - name: Check shell syntax
+        run: bash -n scripts/phonedrop.sh
+
+      - name: Run ShellCheck when available
+        run: |
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck scripts/phonedrop.sh tests/phonedrop_test.sh
+          else
+            echo "shellcheck is not available; skipping"
+          fi
+
+      - name: Run tests
+        run: EXIFTOOL_BIN="$(command -v exiftool)" bash tests/phonedrop_test.sh
